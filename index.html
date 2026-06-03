@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -258,6 +259,7 @@ input[type=range]{flex:1;accent-color:var(--primary)}
   <div class="spacer"></div>
   <button class="btn ghost sm" id="nav-save" onclick="saveQuote()" style="display:none">💾 Salvar</button>
   <button class="btn sm" id="nav-export" onclick="exportPDF()">⬇ Gerar PDF</button>
+  <button class="btn ghost sm" onclick="doLogout()" style="margin-left:8px;opacity:.6" title="Sair">⎋ Sair</button>
 </div>
 
 <div class="main">
@@ -487,17 +489,44 @@ const SEED=[
   docTitle:'ORÇAMENTO',clientLabel:'CLIENTE',respLabel:'RESPONSÁVEL',respName:'',respCpf:'',color:'#b8860b'}
 ];
 
-// ───────── STATE ─────────
-let companies=JSON.parse(localStorage.getItem(LS.comp)||'null');
-if(!companies){companies=SEED.map(c=>({id:uid('co'),logo:null,...c}));localStorage.setItem(LS.comp,JSON.stringify(companies));}
-let stamps=JSON.parse(localStorage.getItem(LS.stamp)||'[]');
-let quotes=JSON.parse(localStorage.getItem(LS.quote)||'[]');
-let counters=JSON.parse(localStorage.getItem(LS.ctr)||'{}');
-let placedList=[];
-let currentQuoteId=null;
+// ═════════ SUPABASE ═════════
+const SB_URL='https://wxtmvncgfrnrptpcrfnm.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4dG12bmNnZnJucnB0cGNyZm5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0Mzk5NTYsImV4cCI6MjA5NjAxNTk1Nn0.LxH5cfVt2m9qeS_YGyvY6df_-274gLASle6wWcKNwYA';
+const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
-const saveAll=()=>{localStorage.setItem(LS.comp,JSON.stringify(companies));localStorage.setItem(LS.stamp,JSON.stringify(stamps));localStorage.setItem(LS.quote,JSON.stringify(quotes));localStorage.setItem(LS.ctr,JSON.stringify(counters));};
+// ───────── STATE ─────────
+let companies=[],stamps=[],quotes=[],counters={};
+let placedList=[],currentQuoteId=null;
+
 const getCompany=id=>companies.find(c=>c.id===id);
+
+// DB row → local model
+const mapCo=r=>({id:r.id,name:r.name,cnpj:r.cnpj||'',ie:r.ie||'',address:r.address||'',city:r.city||'',phone:r.phone||'',email:r.email||'',docTitle:r.doc_title||'ORÇAMENTO',clientLabel:r.client_label||'CLIENTE',respLabel:r.resp_label||'RESPONSÁVEL',respName:r.resp_name||'',respCpf:r.resp_cpf||'',color:r.color||'#003580',logo:r.logo||null});
+const mapSt=r=>({id:r.id,companyId:r.company_id,name:r.name,type:r.type,data:r.data});
+const mapQu=r=>({id:r.id,companyId:r.company_id,num:r.num,date:r.date,val:r.validity||'',client:{nome:r.client_name||'',cnpj:r.client_cnpj||'',end:r.client_address||'',cidade:r.client_city||'',tel:r.client_phone||''},items:r.items||[],pagto:r.payment||'',prazo:r.delivery||'',obs:r.obs||'',placed:r.placed||[],createdAt:new Date(r.created_at).getTime()});
+
+// local model → DB row
+const coRow=c=>({name:c.name,cnpj:c.cnpj,ie:c.ie,address:c.address,city:c.city,phone:c.phone,email:c.email,doc_title:c.docTitle,client_label:c.clientLabel,resp_label:c.respLabel,resp_name:c.respName,resp_cpf:c.respCpf,color:c.color,logo:c.logo});
+const quRow=q=>({company_id:q.companyId,num:q.num,date:q.date||null,validity:q.val,client_name:q.client.nome,client_cnpj:q.client.cnpj,client_address:q.client.end,client_city:q.client.cidade,client_phone:q.client.tel,items:q.items,payment:q.pagto,delivery:q.prazo,obs:q.obs,placed:q.placed});
+
+async function loadData(){
+  const[{data:co},{data:st},{data:qu},{data:ct}]=await Promise.all([
+    sb.from('companies').select('*').order('name'),
+    sb.from('stamps').select('*').order('name'),
+    sb.from('quotes').select('*').order('created_at',{ascending:false}),
+    sb.from('counters').select('*')
+  ]);
+  companies=(co||[]).map(mapCo);
+  stamps=(st||[]).map(mapSt);
+  quotes=(qu||[]).map(mapQu);
+  counters=Object.fromEntries((ct||[]).map(r=>[r.company_id,r.value]));
+  if(!companies.length) await seedCompanies();
+}
+async function seedCompanies(){
+  const rows=SEED.map(c=>({name:c.name,cnpj:c.cnpj,ie:c.ie,address:c.address,city:c.city,phone:c.phone,email:c.email,doc_title:c.docTitle,client_label:c.clientLabel,resp_label:c.respLabel,resp_name:c.respName,resp_cpf:c.respCpf,color:c.color,logo:null}));
+  const{data}=await sb.from('companies').insert(rows).select();
+  companies=(data||[]).map(mapCo);
+}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
 
 // ───────── VIEWS ─────────
@@ -670,18 +699,21 @@ function editCompany(id){
 }
 function pickSwatch(col){$('modal-company').dataset.color=col;document.querySelectorAll('#mc-swatches .swatch').forEach(s=>s.classList.toggle('sel',s.dataset.col===col));}
 function onLogoPick(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{logoTmp=e.target.result;$('mc-logo-info').textContent='Nova logo selecionada';};r.readAsDataURL(f);}
-function saveCompany(){
+async function saveCompany(){
   const id=$('mc-id').value;
-  const data={name:$('mc-name').value.trim(),cnpj:$('mc-cnpj').value.trim(),ie:$('mc-ie').value.trim(),address:$('mc-address').value.trim(),city:$('mc-city').value.trim(),phone:$('mc-phone').value.trim(),email:$('mc-email').value.trim(),docTitle:$('mc-docTitle').value,clientLabel:$('mc-clientLabel').value,respLabel:$('mc-respLabel').value,respName:$('mc-respName').value.trim(),respCpf:$('mc-respCpf').value.trim(),color:$('modal-company').dataset.color};
-  if(!data.name){toast('Informe a razão social');return;}
-  if(id){const c=getCompany(id);Object.assign(c,data);if(logoTmp!==undefined)c.logo=logoTmp;}
-  else{companies.push({id:uid('co'),logo:logoTmp||null,...data});}
-  saveAll();closeModal('modal-company');renderCompanies();fillCompanySelect();fillCropCompany();toast('Empresa salva');
+  const local={name:$('mc-name').value.trim(),cnpj:$('mc-cnpj').value.trim(),ie:$('mc-ie').value.trim(),address:$('mc-address').value.trim(),city:$('mc-city').value.trim(),phone:$('mc-phone').value.trim(),email:$('mc-email').value.trim(),docTitle:$('mc-docTitle').value,clientLabel:$('mc-clientLabel').value,respLabel:$('mc-respLabel').value,respName:$('mc-respName').value.trim(),respCpf:$('mc-respCpf').value.trim(),color:$('modal-company').dataset.color};
+  if(!local.name){toast('Informe a razão social');return;}
+  if(logoTmp!==undefined)local.logo=logoTmp; else local.logo=getCompany(id)?.logo||null;
+  if(id){local.id=id;await sb.from('companies').update(coRow(local)).eq('id',id);const c=getCompany(id);if(c)Object.assign(c,local);}
+  else{const{data}=await sb.from('companies').insert(coRow(local)).select().single();if(data){local.id=data.id;companies.push(mapCo(data));}}
+  closeModal('modal-company');renderCompanies();fillCompanySelect();fillCropCompany();fillDocFilter();toast('Empresa salva');
 }
-function deleteCompany(){
+async function deleteCompany(){
   const id=$('mc-id').value;if(!id)return;
-  if(!confirm('Excluir esta empresa? Carimbos vinculados permanecem na biblioteca.'))return;
-  companies=companies.filter(c=>c.id!==id);saveAll();closeModal('modal-company');renderCompanies();fillCompanySelect();
+  if(!confirm('Excluir esta empresa?'))return;
+  await sb.from('companies').delete().eq('id',id);
+  companies=companies.filter(c=>c.id!==id);
+  closeModal('modal-company');renderCompanies();fillCompanySelect();
 }
 function closeModal(id){$(id).classList.remove('show');}
 
@@ -739,10 +771,12 @@ function removeBg(srcCanvas,thr){
 }
 function currentCropCanvas(){return $('crop-bg').checked?removeBg(cropRaw,+$('crop-thr').value):cropRaw;}
 function updateCropPreview(){if(!cropRaw)return;$('crop-img').src=currentCropCanvas().toDataURL('image/png');}
-function confirmCrop(){
+async function confirmCrop(){
   const name=$('crop-name').value.trim()||('Recorte '+(stamps.length+1));
-  stamps.push({id:uid('st'),companyId:$('crop-company').value,type:$('crop-type').value,name,data:currentCropCanvas().toDataURL('image/png')});
-  saveAll();closeModal('modal-crop');renderLib();toast('Recorte salvo na biblioteca');
+  const row={company_id:$('crop-company').value,type:$('crop-type').value,name,data:currentCropCanvas().toDataURL('image/png')};
+  const{data}=await sb.from('stamps').insert(row).select().single();
+  if(data)stamps.push(mapSt(data));
+  closeModal('modal-crop');renderLib();renderPicker();renderCompanies();toast('Recorte salvo na biblioteca');
 }
 function fillCropCompany(){$('crop-company').innerHTML=companies.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');}
 function fillLibFilter(){$('lib-filter').innerHTML='<option value="">Todas as empresas</option>'+companies.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');}
@@ -756,7 +790,7 @@ function renderLib(){
     <div class="nm">${s.name}<div class="ty">${s.type} · ${c?c.name.split(' ')[0]:'?'}</div></div>
     <button class="btn red sm" onclick="delStamp('${s.id}')">✕</button></div>`;}).join('');
 }
-function delStamp(id){stamps=stamps.filter(s=>s.id!==id);saveAll();renderLib();renderPicker();renderCompanies();}
+async function delStamp(id){await sb.from('stamps').delete().eq('id',id);stamps=stamps.filter(s=>s.id!==id);renderLib();renderPicker();renderCompanies();}
 
 // ═════════ ORÇAMENTO ═════════
 function fillCompanySelect(){
@@ -870,13 +904,21 @@ function collectQuote(){
     items:getItems(),pagto:Vv('f-pagto'),prazo:Vv('f-prazo'),obs:Vv('f-obs'),
     placed:placedList.map(p=>({...p})),createdAt:Date.now()};
 }
-function saveQuote(){
+async function saveQuote(){
   const q=collectQuote();
   if(!q.items.length){toast('Adicione ao menos 1 item');return;}
-  const c=currentCompany();
-  const idx=quotes.findIndex(x=>x.id===q.id);
-  if(idx>=0)quotes[idx]=q;else{quotes.unshift(q);const n=parseInt(q.num)||((counters[c.id]||0)+1);counters[c.id]=Math.max(counters[c.id]||0,n);}
-  currentQuoteId=q.id;saveAll();toast('Orçamento '+q.num+' salvo');
+  const isNew=!quotes.find(x=>x.id===q.id);
+  if(isNew){
+    const{data}=await sb.from('quotes').insert(quRow(q)).select().single();
+    if(data){q.id=data.id;currentQuoteId=data.id;quotes.unshift(mapQu(data));}
+    const n=parseInt(q.num)||1;
+    counters[q.companyId]=Math.max(counters[q.companyId]||0,n);
+    await sb.from('counters').upsert({company_id:q.companyId,value:counters[q.companyId]});
+  } else {
+    await sb.from('quotes').update(quRow(q)).eq('id',q.id);
+    const idx=quotes.findIndex(x=>x.id===q.id);if(idx>=0)quotes[idx]={...quotes[idx],...q};
+  }
+  toast('Orçamento '+q.num+' salvo');
 }
 function newQuote(){
   currentQuoteId=null;
@@ -898,7 +940,7 @@ function loadQuote(id){
   showView('orcamento');toast('Orçamento '+q.num+' carregado');
 }
 function dupQuote(id){const q=quotes.find(x=>x.id===id);if(!q)return;loadQuote(id);currentQuoteId=null;$('f-num').value=nextNumber(q.companyId);toast('Cópia — salve para gerar novo nº');}
-function delQuote(id){if(!confirm('Excluir este orçamento?'))return;quotes=quotes.filter(x=>x.id!==id);saveAll();renderHistory();}
+async function delQuote(id){if(!confirm('Excluir este orçamento?'))return;await sb.from('quotes').delete().eq('id',id);quotes=quotes.filter(x=>x.id!==id);renderHistory();}
 function renderHistory(){
   const el=$('hist-list');
   if(!quotes.length){el.innerHTML='<div class="empty-big">Nenhum orçamento salvo ainda.<br>Monte um e clique em 💾 Salvar.</div>';return;}
@@ -928,40 +970,40 @@ async function exportPDF(){
   pdf.save(`${c.name.split(' ')[0].toLowerCase()}-${Vv('f-num')||'001'}-${cli}.pdf`);
 }
 
-// ═════════ AUTH (swap para Supabase depois) ═════════
-// Usuários locais — substituir por supabase.auth.signInWithPassword()
-const USERS=[
-  {email:'pablo.cedro@yahoo.com.br', pass:'cedro2025'},
-  {email:'admin@cedro.com.br',       pass:'cedro2025'}
-];
-function doLogin(){
+// ═════════ AUTH (Supabase) ═════════
+async function doLogin(){
   const email=$('l-email').value.trim().toLowerCase();
   const pass=$('l-pass').value;
-  const err=$('l-err');
-  err.textContent='';
+  const err=$('l-err');err.textContent='';
   if(!email||!pass){err.textContent='Preencha e-mail e senha.';return;}
-  const ok=USERS.find(u=>u.email===email&&u.pass===pass);
-  if(!ok){err.textContent='E-mail ou senha incorretos.';return;}
-  sessionStorage.setItem('cedro_user',email);
+  err.textContent='Entrando...';
+  const{error}=await sb.auth.signInWithPassword({email,password:pass});
+  if(error){err.textContent='E-mail ou senha incorretos.';return;}
+  await bootApp();
+}
+async function checkAuth(){
+  const{data:{session}}=await sb.auth.getSession();
+  return !!session;
+}
+function doLogout(){sb.auth.signOut().then(()=>location.reload());}
+async function bootApp(){
   $('login-screen').classList.add('hidden');
-  toast('Bem-vindo, '+email.split('@')[0]);
+  $('login-screen').innerHTML+='<div style="position:absolute;inset:0;background:rgba(246,249,252,.8);display:flex;align-items:center;justify-content:center;font-size:13px;color:#64748d">Carregando...</div>';
+  await loadData();
+  fillCompanySelect();fillCropCompany();fillLibFilter();fillDocFilter();
+  $('f-data').value=new Date().toISOString().split('T')[0];
+  addRow();onCompanyChange();
+  document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('mousedown',e=>{if(e.target===m)m.classList.remove('show');}));
+  showView('carimbar');
+  toast('Bem-vindo!');
 }
-function checkAuth(){
-  const u=sessionStorage.getItem('cedro_user');
-  if(u)$('login-screen').classList.add('hidden');
-}
-// Enter key no login
-['l-email','l-pass'].forEach(id=>{
-  $(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
-});
+['l-email','l-pass'].forEach(id=>{$(id).addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});});
 
 // ═════════ INIT ═════════
-checkAuth();
-fillCompanySelect();fillCropCompany();fillLibFilter();
-$('f-data').value=new Date().toISOString().split('T')[0];
-addRow();onCompanyChange();
-document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('mousedown',e=>{if(e.target===m)m.classList.remove('show');}));
-showView('carimbar');
+(async()=>{
+  const logged=await checkAuth();
+  if(logged) await bootApp();
+})();
 </script>
 </body>
 </html>
