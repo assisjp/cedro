@@ -6,6 +6,7 @@
 <title>CEDRO — Sistema de Orçamentos</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -1096,23 +1097,150 @@ function renderHistory(){
 }
 
 // ═════════ PDF EXPORT ═════════
+function hexRgb(h){h=(h||'#003580').replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+function loadImg(src){return new Promise(res=>{const i=new Image();i.onload=()=>res({src,w:i.naturalWidth,h:i.naturalHeight});i.onerror=()=>res(null);i.src=src;});}
+
+// Build the quote as a NATIVE VECTOR pdf (jsPDF + autotable) — crisp text, true pagination,
+// tiny files, preview==export by construction. Stamps overlaid via pdf-lib (same verified math).
+async function buildQuotePdfBytes(){
+  const c=currentCompany();if(!c)throw new Error('Cadastre uma empresa');
+  if(!window.jspdf)throw new Error('jsPDF indisponível');
+  const items=getItems(),total=items.reduce((s,i)=>s+i.total,0);
+  const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');
+  if(typeof doc.autoTable!=='function')throw new Error('autotable indisponível');
+  const PW=210, ML=13.2, MR=210-13.2, CW=MR-ML;
+  const dc=hexRgb(c.color), F='helvetica';
+  let y=11, leftY=11, rightY=11;
+
+  // ── HEADER ──
+  if(c.logo){
+    const im=await loadImg(c.logo);
+    if(im&&im.w&&im.h){let w=60,h=60*im.h/im.w;if(h>24){h=24;w=24*im.w/im.h;}
+      try{doc.addImage(c.logo,'PNG',ML,leftY,w,h);}catch(_){try{doc.addImage(c.logo,'JPEG',ML,leftY,w,h);}catch(__){}}
+      leftY+=h+1.5;}
+  }else{doc.setFont(F,'bold');doc.setFontSize(10.5);doc.setTextColor(...dc);doc.text(c.name,ML,leftY+4,{maxWidth:CW*0.6});leftY+=7;}
+  doc.setFont(F,'normal');doc.setFontSize(7.2);doc.setTextColor(68,68,68);
+  const sub=[];
+  if(c.logo)sub.push({t:c.name,b:true});
+  sub.push({t:'CNPJ: '+(c.cnpj||'')+(c.ie?'   IE: '+c.ie:'')});
+  if(c.address)sub.push({t:c.address});
+  if(c.city)sub.push({t:c.city});
+  const fone=[c.phone?'Fone: '+c.phone:'',c.email||''].filter(Boolean).join('   ');
+  if(fone)sub.push({t:fone});
+  sub.forEach(l=>{doc.setFont(F,l.b?'bold':'normal');doc.text(l.t,ML,leftY+2.6,{maxWidth:CW*0.6});leftY+=3.8;});
+  // number box (right)
+  doc.setFont(F,'normal');doc.setFontSize(6.8);doc.setTextColor(136,136,136);
+  doc.text((c.docTitle||'ORÇAMENTO').toUpperCase(),MR,rightY+3,{align:'right'});
+  doc.setFont(F,'bold');doc.setFontSize(17);doc.setTextColor(...dc);
+  doc.text('#'+(Vv('f-num')||'001'),MR,rightY+11,{align:'right'});
+  doc.setFont(F,'normal');doc.setFontSize(7.5);doc.setTextColor(85,85,85);
+  doc.text('Data: '+(D(Vv('f-data'))||'___/___/____'),MR,rightY+15.5,{align:'right'});
+  if(Vv('f-val'))doc.text('Validade: '+Vv('f-val'),MR,rightY+19,{align:'right'});
+  y=Math.max(leftY,rightY+20)+2;
+  doc.setDrawColor(...dc);doc.setLineWidth(0.8);doc.line(ML,y,MR,y);y+=5;
+
+  // ── TITLE ──
+  doc.setFont(F,'bold');doc.setFontSize(11.5);doc.setTextColor(...dc);
+  doc.text((c.docTitle||'ORÇAMENTO').toUpperCase(),PW/2,y,{align:'center',charSpace:0.6});y+=6;
+
+  const sectionBar=label=>{doc.setFillColor(...dc);doc.rect(ML,y,CW,5,'F');doc.setFont(F,'bold');doc.setFontSize(7.2);doc.setTextColor(255,255,255);doc.text(label.toUpperCase(),ML+2,y+3.4,{charSpace:0.4});y+=8;};
+  const ensure=need=>{if(y+need>288){doc.addPage();y=15;}};
+
+  // ── CLIENT ──
+  sectionBar(c.clientLabel||'CLIENTE');
+  doc.setFontSize(8);
+  const rows=[[(c.clientLabel||'Cliente')+':',Vv('f-cliente')||'—']];
+  if(Vv('f-cnpj'))rows.push(['CNPJ / CPF:',Vv('f-cnpj')]);
+  if(Vv('f-end'))rows.push(['Endereço:',Vv('f-end')]);
+  if(Vv('f-cidade'))rows.push(['Cidade / UF:',Vv('f-cidade')]);
+  if(Vv('f-tel'))rows.push(['Telefone:',Vv('f-tel')]);
+  rows.forEach(([lbl,val])=>{doc.setFont(F,'bold');doc.setTextColor(85,85,85);doc.text(lbl,ML,y+2.8);doc.setFont(F,'normal');doc.setTextColor(17,17,17);doc.text(String(val||''),ML+34,y+2.8,{maxWidth:CW-34});y+=4.6;});
+  y+=2;
+
+  // ── ITEMS (autotable, auto-paginated) ──
+  sectionBar('ITENS');
+  doc.autoTable({
+    startY:y, margin:{left:ML,right:210-MR},
+    head:[['#','Descrição','Qtd','Valor Unit.','Total']],
+    body:items.length?items.map((it,i)=>[String(i+1).padStart(2,'0'),it.desc,String(it.qty),R(it.unit),R(it.total)]):[['','Sem itens','','','']],
+    foot:[[{content:'TOTAL',colSpan:4,styles:{halign:'right'}},R(total)]],
+    theme:'striped',
+    styles:{font:F,fontSize:8,cellPadding:1.6,textColor:[20,20,20]},
+    headStyles:{fillColor:dc,textColor:[255,255,255],fontStyle:'bold'},
+    footStyles:{fillColor:[255,255,255],textColor:dc,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:[246,249,252]},
+    columnStyles:{0:{cellWidth:10},2:{halign:'right',cellWidth:16},3:{halign:'right',cellWidth:30},4:{halign:'right',cellWidth:32}},
+  });
+  y=doc.lastAutoTable.finalY+5;
+
+  // ── CONDITIONS ──
+  ensure(28);
+  sectionBar('CONDIÇÕES COMERCIAIS');
+  doc.setTextColor(34,34,34);doc.setFontSize(8);doc.setFont(F,'normal');
+  [['VALIDADE DA PROPOSTA',Vv('f-val')||'60 dias'],['CONDIÇÕES DE PAGAMENTO',Vv('f-pagto')||'À vista'],['PRAZO DE ENTREGA',Vv('f-prazo')||'Imediata']]
+    .forEach(([k,v])=>{doc.text(k+': '+'.'.repeat(Math.max(2,42-k.length))+' '+v,ML,y+2.8,{maxWidth:CW});y+=4.6;});
+  y+=2;
+  if(Vv('f-obs')){ensure(20);const obs=doc.splitTextToSize('Observações: '+Vv('f-obs'),CW-6);const bh=obs.length*3.6+5;ensure(bh+2);doc.setDrawColor(200,200,200);doc.setLineWidth(0.2);doc.setLineDashPattern([1,1],0);doc.rect(ML,y,CW,bh);doc.setLineDashPattern([],0);doc.setFontSize(7.5);doc.setTextColor(68,68,68);doc.text(obs,ML+3,y+4);y+=bh+3;}
+  ensure(16);doc.setFontSize(8);doc.setTextColor(17,17,17);doc.setFont(F,'normal');
+  const rl=(c.respLabel||'RESPONSÁVEL')+': ';doc.text(rl,ML,y+3);
+  doc.setFont(F,'bold');doc.text((c.respName||'_______________________')+(c.respCpf?'    CPF: '+c.respCpf:''),ML+doc.getTextWidth(rl),y+3);y+=14;
+  ensure(12);const flW=CW*0.6,flX=ML+(CW-flW)/2;doc.setDrawColor(51,51,51);doc.setLineWidth(0.2);doc.line(flX,y,flX+flW,y);
+  doc.setFontSize(7.5);doc.setTextColor(68,68,68);doc.text('CARIMBO / ASSINATURA',PW/2,y+3.5,{align:'center'});
+
+  const bodyBytes=doc.output('arraybuffer');
+
+  // ── STAMP OVERLAY via pdf-lib (same contain-fit + Y-flip + corner-pivot rotation) ──
+  if(!placedList.length)return new Uint8Array(bodyBytes);
+  const{PDFDocument,degrees}=PDFLib;
+  const pdf=await PDFDocument.load(bodyBytes);
+  const pages=pdf.getPages();
+  const pageHpx=297/210*794;                                // #a4 px per A4 page
+  for(const p of placedList){
+    const s=stamps.find(s=>s.id===p.stampId);if(!s)continue;
+    let img;try{img=/^data:image\/jpe?g/i.test(s.data)?await pdf.embedJpg(s.data):await pdf.embedPng(s.data);}catch(_){try{img=await pdf.embedJpg(s.data);}catch(__){continue;}}
+    let pageIdx=Math.floor(p.y/pageHpx);pageIdx=Math.max(0,Math.min(pageIdx,pages.length-1));
+    const page=pages[pageIdx];const{width:Wp,height:Hp}=page.getSize();
+    const ptPerPx=Wp/794, yLocal=p.y-pageIdx*pageHpx;
+    let w=p.w*ptPerPx,h=p.h*ptPerPx;
+    const Cx=(p.x+p.w/2)*ptPerPx, Cy=Hp-(yLocal+p.h/2)*ptPerPx;
+    let dw=w,dh=h;
+    if(img.width>0&&img.height>0){const ar=img.width/img.height,boxAr=w/h;if(ar>boxAr){dh=w/ar;}else{dw=h*ar;}}
+    const phi=-(p.rot||0)*Math.PI/180,co=Math.cos(phi),si=Math.sin(phi);
+    const x=Cx+(-dw/2*co+dh/2*si), yy=Cy+(-dw/2*si-dh/2*co);
+    page.drawImage(img,{x,y:yy,width:dw,height:dh,rotate:degrees(-(p.rot||0))});
+  }
+  return await pdf.save();
+}
+
 async function exportPDF(){
   if(!$('v-orcamento').classList.contains('active')){showView('orcamento');}
+  const c=currentCompany();
+  const fname=`${(c?c.name.split(' ')[0].toLowerCase():'orcamento')}-${Vv('f-num')||'001'}-${(Vv('f-cliente')||'orcamento').replace(/\s+/g,'-').toLowerCase().slice(0,24)}.pdf`;
+  try{
+    const bytes=await buildQuotePdfBytes();                  // native vector
+    dl(new Blob([bytes],{type:'application/pdf'}),fname);
+    toast('PDF vetorial gerado');
+  }catch(e){
+    console.warn('Export vetorial falhou, usando raster:',e);
+    try{await exportPDFRaster(fname);}catch(e2){console.error(e2);toast('Erro ao gerar PDF: '+e2.message);}
+  }
+}
+
+// Fallback: rasteriza o #a4 (html2canvas) com paginação — usado só se o vetorial falhar.
+async function exportPDFRaster(fname){
   const ctrls=document.querySelectorAll('.ps-ctrl,.ps-resize,.ps-border');
   ctrls.forEach(el=>el.style.visibility='hidden');
   try{
-    await (document.fonts&&document.fonts.ready);                 // fonts loaded → preview==export
+    await (document.fonts&&document.fonts.ready);
     const a4=$('a4');
-    // cap raster scale on very long docs so mobile Safari doesn't return a blank canvas (~16M px ceiling)
     const scale=(a4.scrollHeight*3>15000)?2:3;
     const canvas=await html2canvas(a4,{scale,useCORS:true,backgroundColor:'#fff',logging:false});
     if(canvas.height<1){toast('Documento vazio');return;}
     const{jsPDF}=window.jspdf;const pdf=new jsPDF('p','mm','a4');
-    addCanvasPaged(pdf,canvas,true,'jpeg');                       // multi-page slicing (no squash)
-    const c=currentCompany();const cli=(Vv('f-cliente')||'orcamento').replace(/\s+/g,'-').toLowerCase().slice(0,24);
-    pdf.save(`${(c?c.name.split(' ')[0].toLowerCase():'orcamento')}-${Vv('f-num')||'001'}-${cli}.pdf`);
-  }catch(e){console.error(e);toast('Erro ao gerar PDF: '+e.message);}
-  finally{ctrls.forEach(el=>el.style.visibility='');}
+    addCanvasPaged(pdf,canvas,true,'jpeg');
+    pdf.save(fname||'orcamento.pdf');
+    toast('PDF gerado (raster)');
+  }finally{ctrls.forEach(el=>el.style.visibility='');}
 }
 
 // ═════════ AUTH (Supabase) ═════════
