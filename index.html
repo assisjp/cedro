@@ -722,7 +722,7 @@ async function exportStampedPDF(){
   }catch(e){console.error(e);toast('Erro ao gerar PDF: '+e.message);}
 }
 async function exportStampedDOCX(){
-  const ctrls=document.querySelectorAll('#doc-pages .ps-ctrl,#doc-pages .ps-resize,#doc-pages .ps-border');
+  const ctrls=document.querySelectorAll('#doc-pages .ps-ctrl,#doc-pages .ps-resize,#doc-pages .ps-border,#doc-pages .ps-rot');
   ctrls.forEach(el=>el.style.visibility='hidden');
   try{
     await (document.fonts&&document.fonts.ready);                 // ensure fonts loaded → preview==export
@@ -1228,7 +1228,7 @@ async function exportPDF(){
 
 // Fallback: rasteriza o #a4 (html2canvas) com paginação — usado só se o vetorial falhar.
 async function exportPDFRaster(fname){
-  const ctrls=document.querySelectorAll('.ps-ctrl,.ps-resize,.ps-border');
+  const ctrls=document.querySelectorAll('.ps-ctrl,.ps-resize,.ps-border,.ps-rot');
   ctrls.forEach(el=>el.style.visibility='hidden');
   try{
     await (document.fonts&&document.fonts.ready);
