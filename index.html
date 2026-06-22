@@ -174,10 +174,12 @@ input[type=range]{flex:1;accent-color:var(--primary)}
 
 /* placed stamps */
 .ps{position:absolute;cursor:move;user-select:none;z-index:50;transform-origin:center center}
-.ps img{width:100%;height:100%;object-fit:contain;display:block}
+.ps img{position:absolute;display:block}/* size+pos set by fitImage() → contain-fit works in html2canvas too */
 .ps-ctrl{position:absolute;top:-22px;right:0;display:flex;gap:2px;z-index:11}
 .ps-ctrl button{background:var(--dark);border:none;color:#fff;font-size:9px;padding:2px 8px;cursor:pointer;border-radius:9999px;font-family:inherit}
-.ps-resize{position:absolute;bottom:-6px;right:-6px;width:14px;height:14px;background:var(--primary);cursor:se-resize;border-radius:50%;border:2px solid #fff;box-shadow:var(--shadow1)}
+.ps-ctrl button.on{background:var(--primary)}
+.ps-resize{position:absolute;bottom:-6px;right:-6px;width:14px;height:14px;background:var(--primary);cursor:se-resize;border-radius:50%;border:2px solid #fff;box-shadow:var(--shadow1);display:none}
+.ps.ps-edit .ps-resize{display:block}/* resize handle só no modo edição (botão) → preserva tamanho padrão */
 .ps-rot{position:absolute;top:-28px;left:50%;margin-left:-8px;width:16px;height:16px;background:var(--green);cursor:grab;border-radius:50%;border:2px solid #fff;z-index:11;box-shadow:var(--shadow1)}
 .ps-rot::after{content:'↻';position:absolute;top:-1px;left:2px;font-size:11px;color:#fff;line-height:16px}
 .ps-rot::before{content:'';position:absolute;top:16px;left:6px;width:2px;height:12px;background:var(--green)}
@@ -593,6 +595,10 @@ function showView(name){
 
 // ═════════ CARIMBAR DOCUMENTO PRONTO ═════════
 let docPdfBytes=null,docScale=1.6,docPlaced=[],docMode=null; // docMode:'pdf'|'docx'
+// Tamanho-padrão do carimbo/assinatura (caixa fixa). Imagem é encaixada dentro via fitImage().
+const STAMP_W_CM=6, STAMP_H_CM=5, A4_PX_W=794;          // #a4 = 794px = 210mm
+const cmA4=cm=>cm*A4_PX_W/21;                            // orçamento: px por cm (~37.8)
+const cmDoc=cm=>cm*docScale*72/2.54;                    // carimbar: px por cm (~45.4)
 async function loadDoc(input){
   const file=input.files[0];if(!file)return;
   docPlaced=[];const cont=$('doc-pages');cont.innerHTML='';$('doc-empty').style.display='none';
@@ -649,7 +655,7 @@ function placeDocStamp(stampId){
   const target=visiblePage();
   if(!target){toast('Suba um documento primeiro');return;}
   // center of the page's currently-visible region
-  const wrap=$('doc-wrap').getBoundingClientRect(),r=target.getBoundingClientRect(),w=170,h=90;
+  const wrap=$('doc-wrap').getBoundingClientRect(),r=target.getBoundingClientRect(),w=Math.round(cmDoc(STAMP_W_CM)),h=Math.round(cmDoc(STAMP_H_CM));
   const cx=(Math.max(r.left,wrap.left)+Math.min(r.right,wrap.right))/2;
   const cy=(Math.max(r.top,wrap.top)+Math.min(r.bottom,wrap.bottom))/2;
   _placeDocStamp(s,target,cx-r.left-w/2,cy-r.top-h/2,w,h);
@@ -658,22 +664,26 @@ function _placeDocStamp(s,pageDiv,x,y,w,h,existingUid,rot){
   const id=existingUid||uid('dp');rot=rot||0;
   const el=document.createElement('div');el.className='ps';el.id=id;
   el.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px;transform:rotate(${rot}deg);`;
-  el.innerHTML=`<div class="ps-ctrl"><button onclick="removeDocStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
+  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button onclick="removeDocStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
   pageDiv.appendChild(el);
   docPlaced.push({uid:id,stampId:s.id,page:+pageDiv.dataset.page,x,y,w,h,rot});
-  lockRatio(el,id,docPlaced);
+  fitImage(el);
   makeDragDoc(el,id);makeResizeDoc(el.querySelector('.ps-resize'),id);makeRotate(el,el.querySelector('.ps-rot'),id,docPlaced);
 }
-function lockRatio(el,id,list){
-  const img=el.querySelector('img');if(!img)return;
-  // Snap box height to the image's natural ratio so object-fit:contain is a no-op in BOTH
-  // the raster (html2canvas, which ignores object-fit) and vector exports — and normalizes
-  // legacy placements saved before ratio-lock existed. No-op when box already matches ratio.
+// Encaixa a imagem DENTRO da caixa (contain) com tamanho/posição explícitos em px — assim o
+// html2canvas (que ignora object-fit) rende igual aos exports vetoriais. Caixa permanece fixa.
+function fitImage(el){
+  const img=el&&el.querySelector('img');if(!img)return;
   const apply=()=>{const ar=imgRatio(img);if(!ar)return;
-    const w=parseInt(el.style.width)||img.naturalWidth;const nh=w/ar;
-    if(Math.abs((parseInt(el.style.height)||0)-nh)>0.5){el.style.height=nh+'px';const p=list.find(p=>p.uid===id);if(p)p.h=nh;}};
+    const bw=parseInt(el.style.width)||0,bh=parseInt(el.style.height)||0;if(!bw||!bh)return;
+    let w=bw,h=bw/ar;if(h>bh){h=bh;w=bh*ar;}
+    img.style.width=w+'px';img.style.height=h+'px';
+    img.style.left=((bw-w)/2)+'px';img.style.top=((bh-h)/2)+'px';};
   if(img.complete&&img.naturalWidth)apply(); else img.addEventListener('load',apply,{once:true});
 }
+// Modo edição por carimbo: revela o handle de resize (botão ⤢). Default fica travado → preserva padrão.
+function toggleResize(id,e){if(e)e.stopPropagation();const el=$(id);if(!el)return;
+  const on=el.classList.toggle('ps-edit');const b=el.querySelector('.ps-edit-btn');if(b)b.classList.toggle('on',on);}
 function makeRotate(el,handle,id,list){
   handle.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();
     const r=el.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
@@ -683,7 +693,7 @@ function makeRotate(el,handle,id,list){
 }
 function removeDocStamp(id){const el=$(id);if(el)el.remove();docPlaced=docPlaced.filter(p=>p.uid!==id);}
 function makeDragDoc(el,id){el.addEventListener('mousedown',e=>{if(e.target.closest('.ps-ctrl')||e.target.classList.contains('ps-resize'))return;e.preventDefault();const ox=parseInt(el.style.left),oy=parseInt(el.style.top),ix=e.clientX,iy=e.clientY,par=el.parentElement;const mv=e=>{let nx=ox+e.clientX-ix,ny=oy+e.clientY-iy;if(par){nx=Math.max(0,Math.min(nx,par.clientWidth-el.offsetWidth));ny=Math.max(0,Math.min(ny,par.clientHeight-el.offsetHeight));}el.style.left=nx+'px';el.style.top=ny+'px';const p=docPlaced.find(p=>p.uid===id);if(p){p.x=nx;p.y=ny;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
-function makeResizeDoc(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),ar=imgRatio(el.querySelector('img')),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=ar?nw/ar:Math.max(20,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';const p=docPlaced.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
+function makeResizeDoc(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=Math.max(40,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';fitImage(el);const p=docPlaced.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
 
 async function exportStamped(){
   if(!docMode){toast('Suba um documento');return;}
@@ -999,7 +1009,7 @@ function renderPicker(){
 }
 function placeStamp(stampId){
   const s=stamps.find(s=>s.id===stampId);if(!s)return;
-  const a4=$('a4'),w=170,h=90;let x=420,y=920;
+  const a4=$('a4'),w=Math.round(cmA4(STAMP_W_CM)),h=Math.round(cmA4(STAMP_H_CM));let x=420,y=920;
   const foot=a4.querySelector('.doc-foot-line');           // anchor near the signature footer line
   if(foot){
     const ar=a4.getBoundingClientRect(),fr=foot.getBoundingClientRect();
@@ -1013,14 +1023,14 @@ function _placeStamp(s,x,y,w,h,existingUid,rot){
   const id=existingUid||uid('ps');rot=rot||0;const a4=$('a4');
   const el=document.createElement('div');el.className='ps';el.id=id;
   el.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px;transform:rotate(${rot}deg);`;
-  el.innerHTML=`<div class="ps-ctrl"><button onclick="removeStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
+  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button onclick="removeStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
   a4.appendChild(el);placedList.push({uid:id,stampId:s.id,x,y,w,h,rot});
-  lockRatio(el,id,placedList);
+  fitImage(el);
   makeDrag(el,id);makeResize(el.querySelector('.ps-resize'),id);makeRotate(el,el.querySelector('.ps-rot'),id,placedList);
 }
 function removeStamp(id){const el=$(id);if(el)el.remove();placedList=placedList.filter(p=>p.uid!==id);}
 function makeDrag(el,id){el.addEventListener('mousedown',e=>{if(e.target.closest('.ps-ctrl')||e.target.classList.contains('ps-resize'))return;e.preventDefault();const ox=parseInt(el.style.left),oy=parseInt(el.style.top),ix=e.clientX,iy=e.clientY;const mv=e=>{const nx=ox+e.clientX-ix,ny=oy+e.clientY-iy;el.style.left=nx+'px';el.style.top=ny+'px';const p=placedList.find(p=>p.uid===id);if(p){p.x=nx;p.y=ny;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
-function makeResize(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),ar=imgRatio(el.querySelector('img')),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=ar?nw/ar:Math.max(20,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';const p=placedList.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
+function makeResize(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=Math.max(40,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';fitImage(el);const p=placedList.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
 
 // ═════════ SAVE / HISTORY ═════════
 function collectQuote(){
