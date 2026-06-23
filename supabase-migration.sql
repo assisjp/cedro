@@ -32,6 +32,13 @@ $$;
 -- numeração única por empresa (backstop; com a RPC, violação é quase impossível)
 CREATE UNIQUE INDEX IF NOT EXISTS quotes_company_num_uniq ON quotes (company_id, num);
 
+-- ── 3b. Tamanho-padrão por carimbo/assinatura (persistente) ──────────────────
+-- Guarda o tamanho preferido de cada carimbo em CENTÍMETROS (independente do
+-- contexto px/cm: #a4 e carimbar-documento têm escalas diferentes).
+-- NULL = usa o padrão do app (STAMP_W_CM × STAMP_H_CM = 6×5cm).
+ALTER TABLE stamps ADD COLUMN IF NOT EXISTS custom_w numeric;
+ALTER TABLE stamps ADD COLUMN IF NOT EXISTS custom_h numeric;
+
 -- ============================================================================
 -- 4. SB-5: SEGURANÇA — Row Level Security
 -- ============================================================================

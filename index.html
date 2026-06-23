@@ -515,7 +515,7 @@ const getCompany=id=>companies.find(c=>c.id===id);
 
 // DB row → local model
 const mapCo=r=>({id:r.id,name:r.name,cnpj:r.cnpj||'',ie:r.ie||'',address:r.address||'',city:r.city||'',phone:r.phone||'',email:r.email||'',docTitle:r.doc_title||'ORÇAMENTO',clientLabel:r.client_label||'CLIENTE',respLabel:r.resp_label||'RESPONSÁVEL',respName:r.resp_name||'',respCpf:r.resp_cpf||'',color:r.color||'#003580',logo:r.logo||null});
-const mapSt=r=>({id:r.id,companyId:r.company_id,name:r.name,type:r.type,data:r.data});
+const mapSt=r=>({id:r.id,companyId:r.company_id,name:r.name,type:r.type,data:r.data,customW:r.custom_w,customH:r.custom_h});
 const mapQu=r=>({id:r.id,companyId:r.company_id,num:r.num,date:r.date,val:r.validity||'',client:{nome:r.client_name||'',cnpj:r.client_cnpj||'',end:r.client_address||'',cidade:r.client_city||'',tel:r.client_phone||''},items:r.items||[],pagto:r.payment||'',prazo:r.delivery||'',obs:r.obs||'',placed:r.placed||[],createdAt:new Date(r.created_at).getTime()});
 
 // local model → DB row
@@ -655,7 +655,8 @@ function placeDocStamp(stampId){
   const target=visiblePage();
   if(!target){toast('Suba um documento primeiro');return;}
   // center of the page's currently-visible region
-  const wrap=$('doc-wrap').getBoundingClientRect(),r=target.getBoundingClientRect(),w=Math.round(cmDoc(STAMP_W_CM)),h=Math.round(cmDoc(STAMP_H_CM));
+  const wCm=s.customW>0?s.customW:STAMP_W_CM,hCm=s.customH>0?s.customH:STAMP_H_CM;
+  const wrap=$('doc-wrap').getBoundingClientRect(),r=target.getBoundingClientRect(),w=Math.round(cmDoc(wCm)),h=Math.round(cmDoc(hCm));
   const cx=(Math.max(r.left,wrap.left)+Math.min(r.right,wrap.right))/2;
   const cy=(Math.max(r.top,wrap.top)+Math.min(r.bottom,wrap.bottom))/2;
   _placeDocStamp(s,target,cx-r.left-w/2,cy-r.top-h/2,w,h);
@@ -664,7 +665,7 @@ function _placeDocStamp(s,pageDiv,x,y,w,h,existingUid,rot){
   const id=existingUid||uid('dp');rot=rot||0;
   const el=document.createElement('div');el.className='ps';el.id=id;
   el.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px;transform:rotate(${rot}deg);`;
-  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button onclick="removeDocStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
+  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button class="ps-save-btn" title="Salvar tamanho padrão" onclick="saveDocStampSize('${id}',event)">💾</button><button onclick="removeDocStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
   pageDiv.appendChild(el);
   docPlaced.push({uid:id,stampId:s.id,page:+pageDiv.dataset.page,x,y,w,h,rot});
   fitImage(el);
@@ -694,6 +695,17 @@ function makeRotate(el,handle,id,list){
 function removeDocStamp(id){const el=$(id);if(el)el.remove();docPlaced=docPlaced.filter(p=>p.uid!==id);}
 function makeDragDoc(el,id){el.addEventListener('mousedown',e=>{if(e.target.closest('.ps-ctrl')||e.target.classList.contains('ps-resize'))return;e.preventDefault();const ox=parseInt(el.style.left),oy=parseInt(el.style.top),ix=e.clientX,iy=e.clientY,par=el.parentElement;const mv=e=>{let nx=ox+e.clientX-ix,ny=oy+e.clientY-iy;if(par){nx=Math.max(0,Math.min(nx,par.clientWidth-el.offsetWidth));ny=Math.max(0,Math.min(ny,par.clientHeight-el.offsetHeight));}el.style.left=nx+'px';el.style.top=ny+'px';const p=docPlaced.find(p=>p.uid===id);if(p){p.x=nx;p.y=ny;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
 function makeResizeDoc(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=Math.max(40,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';fitImage(el);const p=docPlaced.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
+// Persiste o tamanho atual (px→cm via cmDoc) como padrão do carimbo, na tabela stamps.
+async function saveDocStampSize(id,e){if(e)e.stopPropagation();
+  const p=docPlaced.find(p=>p.uid===id);if(!p)return;
+  const wCm=p.w/cmDoc(1),hCm=p.h/cmDoc(1);
+  try{
+    const{error}=await sb.from('stamps').update({custom_w:wCm,custom_h:hCm}).eq('id',p.stampId);
+    if(error)throw error;
+    const s=stamps.find(s=>s.id===p.stampId);if(s){s.customW=wCm;s.customH=hCm;}
+    toast('Tamanho padrão salvo · '+wCm.toFixed(1)+'×'+hCm.toFixed(1)+'cm');
+  }catch(err){toast('Falha ao salvar tamanho: '+(err.message||err));console.error(err);}
+}
 
 async function exportStamped(){
   if(!docMode){toast('Suba um documento');return;}
@@ -1009,7 +1021,8 @@ function renderPicker(){
 }
 function placeStamp(stampId){
   const s=stamps.find(s=>s.id===stampId);if(!s)return;
-  const a4=$('a4'),w=Math.round(cmA4(STAMP_W_CM)),h=Math.round(cmA4(STAMP_H_CM));let x=420,y=920;
+  const wCm=s.customW>0?s.customW:STAMP_W_CM,hCm=s.customH>0?s.customH:STAMP_H_CM;
+  const a4=$('a4'),w=Math.round(cmA4(wCm)),h=Math.round(cmA4(hCm));let x=420,y=920;
   const foot=a4.querySelector('.doc-foot-line');           // anchor near the signature footer line
   if(foot){
     const ar=a4.getBoundingClientRect(),fr=foot.getBoundingClientRect();
@@ -1023,7 +1036,7 @@ function _placeStamp(s,x,y,w,h,existingUid,rot){
   const id=existingUid||uid('ps');rot=rot||0;const a4=$('a4');
   const el=document.createElement('div');el.className='ps';el.id=id;
   el.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px;transform:rotate(${rot}deg);`;
-  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button onclick="removeStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
+  el.innerHTML=`<div class="ps-ctrl"><button class="ps-edit-btn" title="Redimensionar" onclick="toggleResize('${id}',event)">⤢</button><button class="ps-save-btn" title="Salvar tamanho padrão" onclick="saveStampSize('${id}',event)">💾</button><button onclick="removeStamp('${id}')">✕</button></div><img src="${s.data}" draggable="false"><div class="ps-border"></div><div class="ps-resize"></div><div class="ps-rot" title="Girar (Shift trava 15°)"></div>`;
   a4.appendChild(el);placedList.push({uid:id,stampId:s.id,x,y,w,h,rot});
   fitImage(el);
   makeDrag(el,id);makeResize(el.querySelector('.ps-resize'),id);makeRotate(el,el.querySelector('.ps-rot'),id,placedList);
@@ -1031,6 +1044,17 @@ function _placeStamp(s,x,y,w,h,existingUid,rot){
 function removeStamp(id){const el=$(id);if(el)el.remove();placedList=placedList.filter(p=>p.uid!==id);}
 function makeDrag(el,id){el.addEventListener('mousedown',e=>{if(e.target.closest('.ps-ctrl')||e.target.classList.contains('ps-resize'))return;e.preventDefault();const ox=parseInt(el.style.left),oy=parseInt(el.style.top),ix=e.clientX,iy=e.clientY;const mv=e=>{const nx=ox+e.clientX-ix,ny=oy+e.clientY-iy;el.style.left=nx+'px';el.style.top=ny+'px';const p=placedList.find(p=>p.uid===id);if(p){p.x=nx;p.y=ny;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
 function makeResize(h,id){h.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();const el=$(id),sw=parseInt(el.style.width),sh=parseInt(el.style.height),ix=e.clientX,iy=e.clientY;const mv=e=>{const nw=Math.max(40,sw+e.clientX-ix);const nh=Math.max(40,sh+e.clientY-iy);el.style.width=nw+'px';el.style.height=nh+'px';fitImage(el);const p=placedList.find(p=>p.uid===id);if(p){p.w=nw;p.h=nh;}};const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);});}
+// Persiste o tamanho atual (px→cm via cmA4) como padrão do carimbo, na tabela stamps.
+async function saveStampSize(id,e){if(e)e.stopPropagation();
+  const p=placedList.find(p=>p.uid===id);if(!p)return;
+  const wCm=p.w/cmA4(1),hCm=p.h/cmA4(1);
+  try{
+    const{error}=await sb.from('stamps').update({custom_w:wCm,custom_h:hCm}).eq('id',p.stampId);
+    if(error)throw error;
+    const s=stamps.find(s=>s.id===p.stampId);if(s){s.customW=wCm;s.customH=hCm;}
+    toast('Tamanho padrão salvo · '+wCm.toFixed(1)+'×'+hCm.toFixed(1)+'cm');
+  }catch(err){toast('Falha ao salvar tamanho: '+(err.message||err));console.error(err);}
+}
 
 // ═════════ SAVE / HISTORY ═════════
 function collectQuote(){
